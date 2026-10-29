@@ -1,10 +1,8 @@
 name: Test Backend
 
 on:
-  push:
-    branches:
-      - master
   pull_request:
+  # On master the same job runs in cd.yml, before the deploy.
 permissions:
   contents: read
 

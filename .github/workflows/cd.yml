@@ -1,12 +1,11 @@
 name: CD
 
-# After the backend tests pass on master, deploy that exact commit to production
+# On master: run the backend tests (same job as test-backend.yml), then deploy that exact commit to production
 # (self-hosted runner on the production machine, deployment checkout ~/prod/acme-store).
 on:
-  workflow_run:
-    workflows: ["Test Backend"]
-    types: [completed]
-    branches: [master]
+  push:
+    branches:
+      - master
   workflow_dispatch:
 
 permissions:
@@ -17,17 +16,53 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "latest-known"
+      - run: docker compose down -v --remove-orphans
+      - run: docker compose up -d --wait db mailpit
+      - name: Migrate DB
+        run: uv run bash scripts/prestart.sh
+        working-directory: backend
+      - name: Run tests
+        run: uv run bash scripts/tests-start.sh "Coverage for ${{ github.sha }}"
+        working-directory: backend
+      - run: docker compose down -v --remove-orphans
+      - name: Store coverage files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-html
+          path: backend/htmlcov
+          include-hidden-files: true
+      - name: Coverage report
+        run: uv run coverage report --fail-under=90
+        working-directory: backend
+
   deploy:
-    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    needs: test-backend
     runs-on: [self-hosted, production]
     timeout-minutes: 30
-    env:
-      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Move the deployment checkout to the tested commit
         run: |
           git -C "$HOME/prod/acme-store" fetch -q origin master
           git -C "$HOME/prod/acme-store" checkout -q master
-          git -C "$HOME/prod/acme-store" merge --ff-only "$SHA"
+          git -C "$HOME/prod/acme-store" merge --ff-only "$GITHUB_SHA"
       - name: Deploy
         run: bash "$HOME/prod/deploy.sh"

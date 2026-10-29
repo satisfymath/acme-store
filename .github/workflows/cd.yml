@@ -1,0 +1,33 @@
+name: CD
+
+# After the backend tests pass on master, deploy that exact commit to production
+# (self-hosted runner on the production machine, deployment checkout ~/prod/acme-store).
+on:
+  workflow_run:
+    workflows: ["Test Backend"]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: [self-hosted, production]
+    timeout-minutes: 30
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - name: Move the deployment checkout to the tested commit
+        run: |
+          git -C "$HOME/prod/acme-store" fetch -q origin master
+          git -C "$HOME/prod/acme-store" checkout -q master
+          git -C "$HOME/prod/acme-store" merge --ff-only "$SHA"
+      - name: Deploy
+        run: bash "$HOME/prod/deploy.sh"
